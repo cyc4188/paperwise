@@ -84,7 +84,7 @@ def read(pdf_path: Path | None, arxiv_id: str | None, force: bool, no_kb: bool):
             task = prog.add_task("Fetching metadata from Arxiv…")
             meta = arxiv_reader.fetch_meta(arxiv_id)
             prog.update(task, description=f"[green]Fetched:[/] {meta.title[:60]}")
-            paper_dir = _paper_dir(meta.arxiv_id)
+            paper_dir = _paper_dir(meta.title)
 
             cached_pdf = paper_dir / f"{re.sub(r'[^\\w\\-]', '_', meta.arxiv_id)}.pdf"
             if not cached_pdf.exists() or force:
