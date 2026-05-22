@@ -1,5 +1,6 @@
 """Mode 2: Generate a deep-reading report for a single paper."""
 from __future__ import annotations
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 from research_helper import config
@@ -181,13 +182,16 @@ def _chunk_text(text: str) -> list[str]:
 
 
 def _summarize_chunks(title: str, chunks: list[str]) -> str:
-    summaries = []
-    for i, chunk in enumerate(chunks):
+    def _summarize_one(item: tuple[int, str]) -> str:
+        i, chunk = item
         prompt = (
             f"这是论文《{title}》的第 {i+1}/{len(chunks)} 段，"
             "请提取方法、实验、结论等关键信息，输出 400 字以内的中文摘要：\n\n" + chunk
         )
-        summaries.append(llm.complete(SYSTEM_PROMPT, prompt, max_tokens=1000))
+        return llm.complete(SYSTEM_PROMPT, prompt, max_tokens=1000)
+
+    workers = min(config.CHUNK_SUMMARY_CONCURRENCY, len(chunks))
+    summaries = _ordered_map(_summarize_one, list(enumerate(chunks)), workers)
     return "\n\n".join(f"[第{i+1}段摘要]\n{s}" for i, s in enumerate(summaries))
 
 
@@ -195,6 +199,13 @@ def _prepare_content(title: str, full_text: str) -> str:
     if len(full_text) <= config.CHUNK_SIZE * 2:
         return full_text
     return _summarize_chunks(title, _chunk_text(full_text))
+
+
+def _ordered_map(func, items: list, max_workers: int) -> list:
+    if max_workers <= 1 or len(items) <= 1:
+        return [func(item) for item in items]
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        return list(executor.map(func, items))
 
 
 def generate(
@@ -215,14 +226,21 @@ def generate(
         query_text = f"{meta.title}\n{meta.abstract}"
         kb_section = _build_kb_section(query_text, current_arxiv_id=meta.arxiv_id)
 
-        answers = []
+        prompts = []
         for prompt_tpl in SECTION_PROMPTS:
             prompt = prompt_tpl.format(
                 title=meta.title,
                 content=content,
                 kb_section=kb_section,
             )
-            answers.append(llm.complete(SYSTEM_PROMPT, prompt, max_tokens=10000))
+            prompts.append(prompt)
+
+        workers = min(config.REPORT_SECTION_CONCURRENCY, len(prompts))
+        answers = _ordered_map(
+            lambda prompt: llm.complete(SYSTEM_PROMPT, prompt, max_tokens=10000),
+            prompts,
+            workers,
+        )
 
         save_cache(paper_dir, "analysis", answers)
 

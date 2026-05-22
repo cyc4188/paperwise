@@ -33,6 +33,8 @@ max_abstract_chars = 1500
 [runtime]
 chunk_size = 12000
 chunk_overlap = 500
+chunk_summary_concurrency = 2
+report_section_concurrency = 3
 
 [zotero]
 # data_dir = "~/Zotero"

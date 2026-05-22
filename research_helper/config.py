@@ -121,6 +121,14 @@ EMBEDDING_MODEL = str(_setting("EMBEDDING_MODEL", "embedding.model", ""))
 # ── Chunking ─────────────────────────────────────────────────────────────────
 CHUNK_SIZE = int(_setting("CHUNK_SIZE", "runtime.chunk_size", 12_000))
 CHUNK_OVERLAP = int(_setting("CHUNK_OVERLAP", "runtime.chunk_overlap", 500))
+CHUNK_SUMMARY_CONCURRENCY = max(
+    1,
+    int(_setting("CHUNK_SUMMARY_CONCURRENCY", "runtime.chunk_summary_concurrency", 2)),
+)
+REPORT_SECTION_CONCURRENCY = max(
+    1,
+    int(_setting("REPORT_SECTION_CONCURRENCY", "runtime.report_section_concurrency", 3)),
+)
 
 
 # ── Survey ───────────────────────────────────────────────────────────────────

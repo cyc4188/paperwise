@@ -153,6 +153,18 @@ deepseek = "sk-..."
 
 [base_urls]
 openai = "https://api.openai.com/v1"
+
+[runtime]
+chunk_summary_concurrency = 2
+report_section_concurrency = 3
+```
+
+如果你的网关比较脆弱，建议把并发调低：
+
+```toml
+[runtime]
+chunk_summary_concurrency = 1
+report_section_concurrency = 1
 ```
 
 ---
