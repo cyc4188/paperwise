@@ -2,9 +2,16 @@ import json
 import hashlib
 from pathlib import Path
 
+from research_helper import config
+
+
+def _paper_cache_dir(paper_dir: Path) -> Path:
+    digest = hashlib.md5(str(paper_dir.resolve()).encode("utf-8")).hexdigest()[:12]
+    return config.cache_path("papers", f"{paper_dir.name}-{digest}")
+
 
 def _cache_path(paper_dir: Path, key: str) -> Path:
-    return paper_dir / f".cache_{key}.json"
+    return _paper_cache_dir(paper_dir) / f"{key}.json"
 
 
 def load_cache(paper_dir: Path, key: str):
@@ -15,7 +22,7 @@ def load_cache(paper_dir: Path, key: str):
 
 
 def save_cache(paper_dir: Path, key: str, data) -> None:
-    paper_dir.mkdir(parents=True, exist_ok=True)
+    _paper_cache_dir(paper_dir).mkdir(parents=True, exist_ok=True)
     _cache_path(paper_dir, key).write_text(json.dumps(data, ensure_ascii=False, indent=2))
 
 

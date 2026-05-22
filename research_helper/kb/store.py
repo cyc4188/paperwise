@@ -8,9 +8,10 @@ from pathlib import Path
 import chromadb
 from chromadb.config import Settings
 
+from research_helper import config
 from research_helper.kb import embedder
 
-_KB_DIR = Path("outputs/.kb")
+_KB_DIR = config.KB_DIR
 _COLLECTION = "papers"
 
 _client: chromadb.PersistentClient | None = None

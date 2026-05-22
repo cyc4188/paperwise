@@ -4,6 +4,7 @@ research-helper CLI
 Commands:
   rh read   --pdf paper.pdf           # mode 2: local PDF
   rh read   --arxiv 2310.01234        # mode 2: arxiv ID (downloads PDF)
+  rh read   --zotero "paper key"      # mode 2: Zotero item key or title
   rh survey --query "RAG" --max 20   # mode 1: domain survey
   rh kb list                          # list KB papers
   rh kb search "contrastive learning" # semantic search in KB
@@ -35,11 +36,20 @@ def _paper_dir(name: str) -> Path:
 
 def _ensure_api_key() -> None:
     if config.LLM_PROVIDER == "anthropic" and not config.ANTHROPIC_API_KEY:
-        console.print("[red]Error:[/] ANTHROPIC_API_KEY is not set. Add it to .env or environment.")
+        console.print("[red]Error:[/] ANTHROPIC_API_KEY is not set. Add it to config.toml or the environment.")
         sys.exit(1)
     if config.LLM_PROVIDER == "openai" and not config.OPENAI_API_KEY:
-        console.print("[red]Error:[/] OPENAI_API_KEY is not set. Add it to .env or environment.")
+        console.print("[red]Error:[/] OPENAI_API_KEY is not set. Add it to config.toml or the environment.")
         sys.exit(1)
+
+
+def _render_friendly_error(exc: Exception) -> None:
+    from research_helper.llm.client import LLMRequestError
+
+    if isinstance(exc, LLMRequestError):
+        console.print(f"[red]LLM request failed:[/]\n{exc}")
+        sys.exit(1)
+    raise exc
 
 
 # ---------------------------------------------------------------------------
@@ -49,7 +59,7 @@ def _ensure_api_key() -> None:
 @click.group()
 def main():
     """Research Helper — paper reading and domain survey tool."""
-    pass
+    config.ensure_app_dirs()
 
 
 # ---------------------------------------------------------------------------
@@ -61,88 +71,108 @@ def main():
               help="Path to a local PDF file.")
 @click.option("--arxiv", "arxiv_id", default=None,
               help="Arxiv paper ID (e.g. 2310.01234) or full URL.")
+@click.option("--zotero", "zotero_query", default=None,
+              help="Zotero item key, attachment key, or title search query.")
 @click.option("--force", is_flag=True, default=False,
               help="Regenerate report even if it already exists.")
 @click.option("--no-kb", is_flag=True, default=False,
               help="Skip knowledge base indexing after report generation.")
-def read(pdf_path: Path | None, arxiv_id: str | None, force: bool, no_kb: bool):
+def read(
+    pdf_path: Path | None,
+    arxiv_id: str | None,
+    zotero_query: str | None,
+    force: bool,
+    no_kb: bool,
+):
     """Generate a deep-reading report for a single paper."""
-    if not pdf_path and not arxiv_id:
-        console.print("[red]Error:[/] Provide --pdf or --arxiv.")
-        sys.exit(1)
+    try:
+        chosen_sources = [bool(pdf_path), bool(arxiv_id), bool(zotero_query)]
+        if sum(chosen_sources) != 1:
+            console.print("[red]Error:[/] Provide exactly one of --pdf, --arxiv, or --zotero.")
+            sys.exit(1)
 
-    _ensure_api_key()
+        _ensure_api_key()
 
-    from research_helper.readers import arxiv_reader, pdf_reader
-    from research_helper.reports import single_paper
-    import json
+        from research_helper.readers import arxiv_reader, pdf_reader, zotero_reader
+        from research_helper.reports import single_paper
+        import json
 
-    with Progress(SpinnerColumn(), TextColumn("{task.description}"), console=console) as prog:
+        with Progress(SpinnerColumn(), TextColumn("{task.description}"), console=console) as prog:
 
-        # --- Fetch or load metadata ---
-        if arxiv_id:
-            task = prog.add_task("Fetching metadata from Arxiv…")
-            meta = arxiv_reader.fetch_meta(arxiv_id)
-            prog.update(task, description=f"[green]Fetched:[/] {meta.title[:60]}")
-            paper_dir = _paper_dir(meta.title)
+            # --- Fetch or load metadata ---
+            if arxiv_id:
+                task = prog.add_task("Fetching metadata from Arxiv…")
+                meta = arxiv_reader.fetch_meta(arxiv_id)
+                prog.update(task, description=f"[green]Fetched:[/] {meta.title[:60]}")
+                paper_dir = _paper_dir(meta.title)
 
-            cached_pdf = paper_dir / f"{re.sub(r'[^\\w\\-]', '_', meta.arxiv_id)}.pdf"
-            if not cached_pdf.exists() or force:
-                prog.update(task, description="Downloading PDF…")
-                pdf_path = arxiv_reader.download_pdf(meta, paper_dir)
+                cached_pdf = paper_dir / f"{re.sub(r'[^\\w\\-]', '_', meta.arxiv_id)}.pdf"
+                if not cached_pdf.exists() or force:
+                    prog.update(task, description="Downloading PDF…")
+                    pdf_path = arxiv_reader.download_pdf(meta, paper_dir)
+                else:
+                    pdf_path = cached_pdf
+                prog.update(task, description="[green]PDF ready[/]")
+            elif zotero_query:
+                task = prog.add_task("Loading paper from Zotero…")
+                zotero_match = zotero_reader.find_paper(zotero_query)
+                meta = zotero_match.to_meta()
+                pdf_path = zotero_match.pdf_path
+                paper_dir = _paper_dir(meta.title)
+                prog.update(task, description=f"[green]Loaded from Zotero:[/] {meta.title[:60]}")
             else:
-                pdf_path = cached_pdf
-            prog.update(task, description="[green]PDF ready[/]")
-        else:
-            meta = _meta_from_pdf(pdf_path)
-            paper_dir = _paper_dir(pdf_path.stem)
+                meta = _meta_from_pdf(pdf_path)
+                paper_dir = _paper_dir(pdf_path.stem)
 
-        # Save meta.json
-        paper_dir.mkdir(parents=True, exist_ok=True)
-        (paper_dir / "meta.json").write_text(
-            json.dumps(
-                {
-                    "arxiv_id": meta.arxiv_id,
-                    "title": meta.title,
-                    "authors": meta.authors,
-                    "published": meta.published,
-                    "abstract": meta.abstract,
-                    "categories": meta.categories,
-                },
-                ensure_ascii=False,
-                indent=2,
-            ),
-            encoding="utf-8",
+            # Save meta.json
+            paper_dir.mkdir(parents=True, exist_ok=True)
+            (paper_dir / "meta.json").write_text(
+                json.dumps(
+                    {
+                        "arxiv_id": meta.arxiv_id,
+                        "source": "zotero" if meta.arxiv_id.startswith("zotero:") else ("local" if meta.arxiv_id == "local" else "arxiv"),
+                        "title": meta.title,
+                        "authors": meta.authors,
+                        "published": meta.published,
+                        "abstract": meta.abstract,
+                        "categories": meta.categories,
+                    },
+                    ensure_ascii=False,
+                    indent=2,
+                ),
+                encoding="utf-8",
+            )
+
+            # --- Extract text ---
+            task2 = prog.add_task("Extracting text from PDF…")
+            full_text = pdf_reader.extract_text(pdf_path)
+            prog.update(task2, description=f"[green]Extracted[/] {len(full_text):,} chars")
+
+            # --- Generate report ---
+            task3 = prog.add_task("Generating report with LLM…")
+            report_path = single_paper.generate(paper_dir, meta, full_text, force=force)
+            prog.update(task3, description=f"[green]Report saved →[/] {report_path}")
+
+            # --- Index into KB ---
+            if not no_kb:
+                task4 = prog.add_task("Indexing into knowledge base…")
+                single_paper.add_to_kb(meta, report_path)
+                prog.update(task4, description="[green]Added to KB[/]")
+
+        from research_helper.utils import cost_tracker
+        cost_tracker.flush_to_log(meta.title[:60])
+        s = cost_tracker.session_summary()
+
+        console.rule()
+        console.print(f"[bold green]Done![/] Report: [cyan]{report_path}[/]")
+        console.print(f"Directory: [cyan]{paper_dir}[/]")
+        console.print(
+            f"[dim]本次费用：[/][yellow]${s['cost_usd']:.4f}[/]"
+            f"[dim]  (in {s['input_tokens']:,} / out {s['output_tokens']:,} / embed {s['embed_tokens']:,} tokens,"
+            f" {s['calls']} calls)[/]"
         )
-
-        # --- Extract text ---
-        task2 = prog.add_task("Extracting text from PDF…")
-        full_text = pdf_reader.extract_text(pdf_path)
-        prog.update(task2, description=f"[green]Extracted[/] {len(full_text):,} chars")
-
-        # --- Generate report ---
-        task3 = prog.add_task("Generating report with LLM…")
-        report_path = single_paper.generate(paper_dir, meta, full_text, force=force)
-        prog.update(task3, description=f"[green]Report saved →[/] {report_path}")
-
-        # --- Index into KB ---
-        if not no_kb:
-            task4 = prog.add_task("Indexing into knowledge base…")
-            single_paper.add_to_kb(meta, report_path)
-            prog.update(task4, description="[green]Added to KB[/]")
-
-    from research_helper.utils import cost_tracker
-    cost_tracker.flush_to_log(meta.title[:60])
-    s = cost_tracker.session_summary()
-
-    console.rule()
-    console.print(f"[bold green]Done![/] Report: [cyan]{report_path}[/]")
-    console.print(f"Directory: [cyan]{paper_dir}[/]")
-    console.print(
-        f"[dim]本次费用：[/][yellow]${s['cost_usd']:.4f}[/]"
-        f"[dim]  (in {s['input_tokens']:,} / out {s['output_tokens']:,} / embed {s['embed_tokens']:,} tokens,"
-        f" {s['calls']} calls)[/]"
-    )
+    except Exception as exc:
+        _render_friendly_error(exc)
 
 
 def _meta_from_pdf(pdf_path: Path):
@@ -181,39 +211,42 @@ def _meta_from_pdf(pdf_path: Path):
               help="Regenerate survey even if it already exists.")
 def survey(query: str, max_papers: int, force: bool):
     """Search Arxiv and generate a domain survey report."""
-    _ensure_api_key()
+    try:
+        _ensure_api_key()
 
-    from research_helper.readers import arxiv_reader
-    from research_helper.reports import survey as survey_report
+        from research_helper.readers import arxiv_reader
+        from research_helper.reports import survey as survey_report
 
-    output_dir = _paper_dir(f"survey_{query}")
-    report_path = output_dir / "survey.md"
+        output_dir = _paper_dir(f"survey_{query}")
+        report_path = output_dir / "survey.md"
 
-    if report_path.exists() and not force:
-        console.print(f"[yellow]Survey already exists:[/] {report_path}")
-        console.print("Use --force to regenerate.")
-        return
+        if report_path.exists() and not force:
+            console.print(f"[yellow]Survey already exists:[/] {report_path}")
+            console.print("Use --force to regenerate.")
+            return
 
-    with Progress(SpinnerColumn(), TextColumn("{task.description}"), console=console) as prog:
-        task = prog.add_task(f'Searching Arxiv for "{query}" (max {max_papers})…')
-        papers = arxiv_reader.search_papers(query, max_results=max_papers)
-        prog.update(task, description=f"[green]Found {len(papers)} papers[/]")
+        with Progress(SpinnerColumn(), TextColumn("{task.description}"), console=console) as prog:
+            task = prog.add_task(f'Searching Arxiv for "{query}" (max {max_papers})…')
+            papers = arxiv_reader.search_papers(query, max_results=max_papers)
+            prog.update(task, description=f"[green]Found {len(papers)} papers[/]")
 
-        task2 = prog.add_task("Generating survey report with LLM…")
-        path = survey_report.generate(query, papers, output_dir)
-        prog.update(task2, description=f"[green]Survey saved →[/] {path}")
+            task2 = prog.add_task("Generating survey report with LLM…")
+            path = survey_report.generate(query, papers, output_dir)
+            prog.update(task2, description=f"[green]Survey saved →[/] {path}")
 
-    from research_helper.utils import cost_tracker
-    cost_tracker.flush_to_log(f"survey:{query[:40]}")
-    s = cost_tracker.session_summary()
+        from research_helper.utils import cost_tracker
+        cost_tracker.flush_to_log(f"survey:{query[:40]}")
+        s = cost_tracker.session_summary()
 
-    console.rule()
-    console.print(f"[bold green]Done![/] Survey: [cyan]{path}[/]")
-    console.print(f"Papers list: [cyan]{output_dir / 'papers.json'}[/]")
-    console.print(
-        f"[dim]本次费用：[/][yellow]${s['cost_usd']:.4f}[/]"
-        f"[dim]  (in {s['input_tokens']:,} / out {s['output_tokens']:,} tokens)[/]"
-    )
+        console.rule()
+        console.print(f"[bold green]Done![/] Survey: [cyan]{path}[/]")
+        console.print(f"Papers list: [cyan]{output_dir / 'papers.json'}[/]")
+        console.print(
+            f"[dim]本次费用：[/][yellow]${s['cost_usd']:.4f}[/]"
+            f"[dim]  (in {s['input_tokens']:,} / out {s['output_tokens']:,} tokens)[/]"
+        )
+    except Exception as exc:
+        _render_friendly_error(exc)
 
 
 # ---------------------------------------------------------------------------
@@ -236,7 +269,7 @@ def kb_list():
         return
 
     table = Table(title=f"Knowledge Base ({len(papers)} papers)", show_lines=False)
-    table.add_column("Arxiv ID", style="cyan", no_wrap=True)
+    table.add_column("Doc ID", style="cyan", no_wrap=True)
     table.add_column("Published", style="dim", no_wrap=True)
     table.add_column("Title")
     for p in papers:
@@ -271,7 +304,7 @@ def kb_stats():
     from research_helper.kb import store
     n = store.count()
     console.print(f"[bold]Knowledge base:[/] {n} papers indexed")
-    db_path = Path("outputs/.kb")
+    db_path = config.KB_DIR
     if db_path.exists():
         size = sum(f.stat().st_size for f in db_path.rglob("*") if f.is_file())
         console.print(f"Storage: [cyan]{db_path}[/] ({size / 1024:.1f} KB)")
@@ -282,7 +315,7 @@ def kb_stats():
 # ---------------------------------------------------------------------------
 
 @main.command()
-@click.option("--out", "out_dir", default="outputs/graph", show_default=True,
+@click.option("--out", "out_dir", default=str(config.OUTPUTS_DIR / "graph"), show_default=True,
               help="Output directory for graph files.")
 @click.option("--threshold", default=0.55, show_default=True,
               help="Cosine similarity threshold for paper-paper edges.")
@@ -291,59 +324,99 @@ def kb_stats():
 @click.option("--open", "open_browser", is_flag=True, default=False,
               help="Open the HTML graph in the default browser after generation.")
 def graph(out_dir: str, threshold: float, no_cache: bool, open_browser: bool):
-    """Build a knowledge graph from all papers in outputs/."""
-    from research_helper.kb.graph import build, export_json, export_html
-    import shutil
+    """Build a knowledge graph from all papers in the configured outputs directory."""
+    try:
+        from research_helper.kb.graph import build, export_json, export_html
+        import shutil
 
-    out_path = Path(out_dir)
-    out_path.mkdir(parents=True, exist_ok=True)
+        out_path = Path(out_dir)
+        out_path.mkdir(parents=True, exist_ok=True)
 
-    if no_cache:
-        for d in config.OUTPUTS_DIR.iterdir():
-            cache = d / "graph_info.json"
-            if cache.exists():
-                cache.unlink()
+        if no_cache:
+            graph_cache_dir = config.cache_path("graph")
+            if graph_cache_dir.exists():
+                for cache in graph_cache_dir.glob("*.json"):
+                    cache.unlink()
 
-    with Progress(SpinnerColumn(), TextColumn("{task.description}"), console=console) as prog:
-        task = prog.add_task("Building knowledge graph…")
+        with Progress(SpinnerColumn(), TextColumn("{task.description}"), console=console) as prog:
+            task = prog.add_task("Building knowledge graph…")
 
-        def _update(msg: str):
-            prog.update(task, description=msg)
+            def _update(msg: str):
+                prog.update(task, description=msg)
 
-        nodes, edges = build(similarity_threshold=threshold, progress_cb=_update)
+            nodes, edges = build(similarity_threshold=threshold, progress_cb=_update)
 
-        prog.update(task, description="Exporting JSON…")
-        json_path = out_path / "graph.json"
-        export_json(nodes, edges, json_path)
+            prog.update(task, description="Exporting JSON…")
+            json_path = out_path / "graph.json"
+            export_json(nodes, edges, json_path)
 
-        prog.update(task, description="Rendering HTML…")
-        html_path = out_path / "graph.html"
-        export_html(nodes, edges, html_path)
+            prog.update(task, description="Rendering HTML…")
+            html_path = out_path / "graph.html"
+            export_html(nodes, edges, html_path)
 
-        prog.update(task, description="[green]Done![/]")
+            prog.update(task, description="[green]Done![/]")
 
-    paper_count = sum(1 for n in nodes if n.type == "paper")
-    concept_count = sum(1 for n in nodes if n.type == "concept")
-    console.rule()
-    console.print(
-        f"[bold green]Knowledge graph built![/]  "
-        f"{paper_count} 篇论文 · {concept_count} 个概念 · {len(edges)} 条边"
-    )
-    console.print(f"HTML:  [cyan]{html_path}[/]")
-    console.print(f"JSON:  [cyan]{json_path}[/]")
-
-    from research_helper.utils import cost_tracker
-    cost_tracker.flush_to_log("graph")
-    s = cost_tracker.session_summary()
-    if s["calls"]:
+        paper_count = sum(1 for n in nodes if n.type == "paper")
+        concept_count = sum(1 for n in nodes if n.type == "concept")
+        console.rule()
         console.print(
-            f"[dim]本次费用：[/][yellow]${s['cost_usd']:.4f}[/]"
-            f"[dim]  ({s['input_tokens']:,} in / {s['output_tokens']:,} out tokens, {s['calls']} calls)[/]"
+            f"[bold green]Knowledge graph built![/]  "
+            f"{paper_count} 篇论文 · {concept_count} 个概念 · {len(edges)} 条边"
         )
+        console.print(f"HTML:  [cyan]{html_path}[/]")
+        console.print(f"JSON:  [cyan]{json_path}[/]")
 
-    if open_browser:
-        import webbrowser
-        webbrowser.open(html_path.resolve().as_uri())
+        from research_helper.utils import cost_tracker
+        cost_tracker.flush_to_log("graph")
+        s = cost_tracker.session_summary()
+        if s["calls"]:
+            console.print(
+                f"[dim]本次费用：[/][yellow]${s['cost_usd']:.4f}[/]"
+                f"[dim]  ({s['input_tokens']:,} in / {s['output_tokens']:,} out tokens, {s['calls']} calls)[/]"
+            )
+
+        if open_browser:
+            import webbrowser
+            webbrowser.open(html_path.resolve().as_uri())
+    except Exception as exc:
+        _render_friendly_error(exc)
+
+
+# ---------------------------------------------------------------------------
+# rh zotero
+# ---------------------------------------------------------------------------
+
+@main.group()
+def zotero():
+    """Inspect the local Zotero library."""
+    pass
+
+
+@zotero.command("search")
+@click.argument("query")
+@click.option("--limit", default=10, show_default=True, help="Maximum number of results to return.")
+def zotero_search(query: str, limit: int):
+    """Search local Zotero items that have PDF attachments."""
+    from research_helper.readers import zotero_reader
+
+    try:
+        matches = zotero_reader.search_papers(query, limit=limit)
+    except Exception as exc:
+        console.print(f"[red]Error:[/] {exc}")
+        sys.exit(1)
+
+    if not matches:
+        console.print(f'[yellow]No Zotero PDFs matched:[/] "{query}"')
+        return
+
+    table = Table(title=f'Zotero Matches ({len(matches)})', show_lines=False)
+    table.add_column("Item Key", style="cyan", no_wrap=True)
+    table.add_column("Attachment Key", style="dim", no_wrap=True)
+    table.add_column("Published", style="dim", no_wrap=True)
+    table.add_column("Title")
+    for m in matches:
+        table.add_row(m.item_key, m.attachment_key, m.published, m.title)
+    console.print(table)
 
 
 # ---------------------------------------------------------------------------

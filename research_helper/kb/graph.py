@@ -50,7 +50,10 @@ class GEdge:
 # ── Extraction helpers ────────────────────────────────────────────────────────
 
 def _extract_info(paper_dir: Path, report: str) -> dict:
-    cache = paper_dir / "graph_info.json"
+    import hashlib as _hashlib
+
+    digest = _hashlib.md5(str(paper_dir.resolve()).encode("utf-8")).hexdigest()[:12]
+    cache = config.cache_path("graph", f"{paper_dir.name}-{digest}.json")
     if cache.exists():
         return json.loads(cache.read_text(encoding="utf-8"))
 
@@ -78,6 +81,7 @@ def _extract_info(paper_dir: Path, report: str) -> dict:
     info.setdefault("concepts", [])
     info.setdefault("relations", [])
 
+    cache.parent.mkdir(parents=True, exist_ok=True)
     cache.write_text(json.dumps(info, ensure_ascii=False, indent=2), encoding="utf-8")
     return info
 

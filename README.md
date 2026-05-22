@@ -12,9 +12,11 @@
 |------|------|
 | `rh read --arxiv 2310.01234` | 精读单篇论文，生成 6 节结构化报告（中文） |
 | `rh read --pdf paper.pdf` | 同上，使用本地 PDF |
+| `rh read --zotero "X6HNG7EZ"` | 从 Zotero 本地文库读取带 PDF 的条目并生成精读 |
 | `rh survey --query "KV Cache"` | 检索 Arxiv，生成领域综述 |
 | `rh graph` | 从已读论文构建知识图谱（交互式 HTML + JSON） |
 | `rh kb search "attention"` | 在知识库中语义检索 |
+| `rh zotero search "attention"` | 搜索本地 Zotero 中带 PDF 的论文条目 |
 | `rh cost` | 查看 API 费用记录 |
 
 ### 精读报告结构
@@ -53,8 +55,9 @@ pip install -e .
 复制配置文件并填入 API Key：
 
 ```bash
-cp .env.example .env
-# 编辑 .env，填入 DEEPSEEK_API_KEY 等
+mkdir -p ~/.config/research-helper
+cp config.toml.example ~/.config/research-helper/config.toml
+# 编辑 ~/.config/research-helper/config.toml，填入 API key 和路径配置
 ```
 
 读第一篇论文：
@@ -63,11 +66,61 @@ cp .env.example .env
 rh read --arxiv 1706.03762   # Attention Is All You Need
 ```
 
+从 Zotero 读论文：
+
+```bash
+rh zotero search "CeFi vs. DeFi"
+rh read --zotero X6HNG7EZ
+# 也支持按标题关键字匹配：
+rh read --zotero "CeFi vs. DeFi"
+```
+
 ---
 
 ## 配置
 
-所有配置通过 `.env` 文件或环境变量设置，参见 [`.env.example`](.env.example)。
+所有配置通过 `config.toml` 或环境变量设置，参见 [config.toml.example](/Users/cyc-mac/Workspace/MyProject/paperwise/config.toml.example)。
+
+默认情况下，程序会优先读取：
+
+1. `RH_CONFIG_FILE` 指定的配置文件
+2. `~/.config/research-helper/config.toml`
+
+默认目录布局如下：
+
+- 配置：`~/.config/research-helper`
+- 数据：`~/.local/share/research-helper`
+- 缓存：`~/.cache/research-helper`
+
+其中：
+
+- 精读报告、综述、图谱输出：`~/.local/share/research-helper/outputs`
+- 知识库：`~/.local/share/research-helper/kb`
+- 费用日志：`~/.local/share/research-helper/cost_log.jsonl`
+- 中间缓存：`~/.cache/research-helper`
+
+如果需要自定义，可设置：
+
+- `RH_CONFIG_DIR`
+- `RH_DATA_DIR`
+- `RH_CACHE_DIR`
+- `RH_CONFIG_FILE`
+- `RH_OUTPUTS_DIR`
+- `ZOTERO_DATA_DIR`
+
+`outputs` 路径现在也可以直接在配置文件里设置：
+
+```toml
+[paths]
+outputs_dir = "/your/path/to/research-helper-outputs"
+```
+
+也支持为不同提供商单独配置 `base_url`，例如改 OpenAI 的 API 地址：
+
+```toml
+[base_urls]
+openai = "https://your-openai-compatible-endpoint/v1"
+```
 
 ### LLM 提供商
 
@@ -81,6 +134,26 @@ rh read --arxiv 1706.03762   # Attention Is All You Need
 ### 向量嵌入（知识库）
 
 优先级：`EMBEDDING_PROVIDER` 环境变量 → 有 `QWEN_API_KEY` 则用 Qwen → 有 `OPENAI_API_KEY` 则用 OpenAI → 本地 `sentence-transformers`（无需 Key，首次运行自动下载模型）。
+
+### 配置文件示例
+
+```toml
+[paths]
+config_dir = "~/.config/research-helper"
+data_dir = "~/.local/share/research-helper"
+cache_dir = "~/.cache/research-helper"
+outputs_dir = "~/.local/share/research-helper/outputs"
+
+[llm]
+provider = "deepseek"
+model = "deepseek-chat"
+
+[api_keys]
+deepseek = "sk-..."
+
+[base_urls]
+openai = "https://api.openai.com/v1"
+```
 
 ---
 
@@ -99,7 +172,8 @@ research_helper/
 ├── llm/client.py       # 多提供商 LLM 客户端
 ├── readers/
 │   ├── arxiv_reader.py # Arxiv 元数据 + PDF 下载
-│   └── pdf_reader.py   # PDF 文本提取（pymupdf + pdfplumber）
+│   ├── pdf_reader.py   # PDF 文本提取（pymupdf + pdfplumber）
+│   └── zotero_reader.py# Zotero 本地文库读取
 ├── reports/
 │   ├── single_paper.py # 精读报告生成（6 节 × 独立调用）
 │   └── survey.py       # 领域综述生成

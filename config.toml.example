@@ -1,0 +1,38 @@
+[paths]
+config_dir = "~/.config/research-helper"
+data_dir = "~/.local/share/research-helper"
+cache_dir = "~/.cache/research-helper"
+outputs_dir = "~/.local/share/research-helper/outputs"
+# kb_dir = "~/.local/share/research-helper/kb"
+# cost_log_path = "~/.local/share/research-helper/cost_log.jsonl"
+
+[llm]
+provider = "deepseek"  # anthropic | openai | deepseek | qwen
+model = "deepseek-chat"
+
+[api_keys]
+anthropic = "sk-ant-..."
+openai = "sk-..."
+deepseek = "sk-..."
+qwen = "sk-..."
+
+[base_urls]
+# openai = "https://api.openai.com/v1"
+# anthropic = "https://api.anthropic.com"
+# deepseek = "https://api.deepseek.com"
+# qwen = "https://dashscope.aliyuncs.com/compatible-mode/v1"
+
+[embedding]
+# provider = "qwen"    # qwen | openai | local
+# model = "text-embedding-v3"
+
+[survey]
+max_papers = 20
+max_abstract_chars = 1500
+
+[runtime]
+chunk_size = 12000
+chunk_overlap = 500
+
+[zotero]
+# data_dir = "~/Zotero"

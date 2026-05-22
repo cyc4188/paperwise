@@ -25,13 +25,14 @@ def embed_one(text: str) -> list[float]:
 
 def _embed_openai_compat(texts: list[str], provider: str) -> list[list[float]]:
     from openai import OpenAI
-    from research_helper.llm.client import _BASE_URLS, _api_key
+    from research_helper.llm.client import _DEFAULT_HEADERS, _api_key, _base_url
     from research_helper.utils import cost_tracker
 
     model = config.EMBEDDING_MODEL or _DEFAULT_MODELS[provider]
     client = OpenAI(
         api_key=_api_key(provider),
-        base_url=_BASE_URLS.get(provider),
+        base_url=_base_url(provider),
+        default_headers=_DEFAULT_HEADERS,
     )
     results: list[list[float]] = []
     total_tokens = 0

@@ -24,7 +24,7 @@ REPORT_TEMPLATE = """\
 
 **作者**：{authors}
 **发表时间**：{published}
-**Arxiv ID**：{arxiv_id}
+**文献 ID**：{arxiv_id}
 **领域**：{categories}
 
 ---

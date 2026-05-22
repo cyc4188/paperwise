@@ -4,12 +4,11 @@ import json
 import threading
 from dataclasses import dataclass, field
 from datetime import datetime
-from pathlib import Path
 
 from research_helper import config
 
 _lock = threading.Lock()
-_LOG_PATH = config.OUTPUTS_DIR / ".cost_log.jsonl"
+_LOG_PATH = config.COST_LOG_PATH
 
 # ── Session accumulator (reset each process) ─────────────────────────────────
 
