@@ -1,4 +1,5 @@
 from __future__ import annotations
+import json
 from research_helper import config
 
 _BASE_URLS = {
@@ -33,6 +34,116 @@ def _friendly_network_error(provider: str, model: str, exc: Exception) -> LLMReq
     if provider == "deepseek":
         hint += " If you are using a local proxy, make sure it is running and can reach api.deepseek.com."
     return LLMRequestError(f"{hint}\n\nOriginal error: {exc}")
+
+
+def _record_openai_usage(resp, model: str) -> None:
+    from research_helper.utils import cost_tracker
+
+    usage = getattr(resp, "usage", None)
+    if usage is None and isinstance(resp, dict):
+        usage = resp.get("usage")
+    if not usage:
+        return
+
+    prompt_tokens = getattr(usage, "prompt_tokens", None)
+    completion_tokens = getattr(usage, "completion_tokens", None)
+    if isinstance(usage, dict):
+        prompt_tokens = usage.get("prompt_tokens")
+        completion_tokens = usage.get("completion_tokens")
+
+    if prompt_tokens is not None and completion_tokens is not None:
+        cost_tracker.record_llm(model, int(prompt_tokens), int(completion_tokens))
+
+
+def _extract_sse_text(text: str) -> str:
+    chunks: list[str] = []
+    found_sse = False
+    for raw_line in text.splitlines():
+        line = raw_line.strip()
+        if not line or not line.startswith("data:"):
+            continue
+        found_sse = True
+        payload = line[5:].strip()
+        if payload == "[DONE]":
+            break
+        try:
+            data = json.loads(payload)
+        except json.JSONDecodeError:
+            continue
+
+        choices = data.get("choices") or []
+        if not choices:
+            continue
+        choice = choices[0] or {}
+
+        delta = choice.get("delta") or {}
+        if isinstance(delta, dict):
+            content = delta.get("content")
+            if isinstance(content, str):
+                chunks.append(content)
+                continue
+            if isinstance(content, list):
+                for item in content:
+                    if isinstance(item, dict) and item.get("type") == "text":
+                        chunks.append(item.get("text", ""))
+                continue
+
+        message = choice.get("message") or {}
+        if isinstance(message, dict):
+            content = message.get("content")
+            if isinstance(content, str):
+                chunks.append(content)
+                continue
+            if isinstance(content, list):
+                for item in content:
+                    if isinstance(item, dict) and item.get("type") == "text":
+                        chunks.append(item.get("text", ""))
+
+    if found_sse:
+        return "".join(chunks)
+    return text
+
+
+def _extract_openai_text(resp) -> str:
+    if isinstance(resp, str):
+        return _extract_sse_text(resp)
+
+    choices = getattr(resp, "choices", None)
+    if choices is None and isinstance(resp, dict):
+        choices = resp.get("choices")
+    if not choices:
+        raise LLMRequestError(
+            f"LLM response did not contain choices. Response type: {type(resp).__name__}"
+        )
+
+    first = choices[0]
+    message = getattr(first, "message", None)
+    if message is None and isinstance(first, dict):
+        message = first.get("message")
+
+    content = getattr(message, "content", None) if message is not None else None
+    if content is None and isinstance(message, dict):
+        content = message.get("content")
+
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        parts: list[str] = []
+        for item in content:
+            if isinstance(item, str):
+                parts.append(item)
+            elif isinstance(item, dict) and item.get("type") == "text":
+                parts.append(item.get("text", ""))
+            else:
+                text = getattr(item, "text", None)
+                if text:
+                    parts.append(text)
+        return "".join(parts)
+    if content is None:
+        raise LLMRequestError(
+            f"LLM response did not contain message content. Response type: {type(resp).__name__}"
+        )
+    return str(content)
 
 
 def complete(system: str, user: str, max_tokens: int = 4096) -> str:
@@ -77,7 +188,6 @@ def _anthropic(system: str, user: str, model: str, max_tokens: int) -> str:
 
 def _openai_compat(system: str, user: str, model: str, max_tokens: int, provider: str) -> str:
     from openai import OpenAI
-    from research_helper.utils import cost_tracker
 
     api_key = _api_key(provider)
     base_url = _base_url(provider)
@@ -101,9 +211,8 @@ def _openai_compat(system: str, user: str, model: str, max_tokens: int, provider
         if "Timeout" in name or "Connection" in name or "Connect" in name or "Network" in name:
             raise _friendly_network_error(provider, model, exc) from exc
         raise
-    if resp.usage:
-        cost_tracker.record_llm(model, resp.usage.prompt_tokens, resp.usage.completion_tokens)
-    return resp.choices[0].message.content or ""
+    _record_openai_usage(resp, model)
+    return _extract_openai_text(resp)
 
 
 def _api_key(provider: str) -> str:
